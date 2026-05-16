@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>戰鬥陀螺賽程產生器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+
+        :root {
+            --line-color: #cbd5e1;
+            --connector-width: 30px;
+            --card-width: 180px;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f1f5f9;
+            color: #1e293b;
+            min-height: 100vh;
+        }
+        .match-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+            width: var(--card-width);
+        }
+
+        .round-column {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 24px;
+            position: relative;
+            margin-right: var(--connector-width);
+            min-width: var(--card-width);
+        }
+
+        .connector-line {
+            position: absolute;
+            right: calc(var(--connector-width) * -1);
+            width: var(--connector-width);
+            border-color: var(--line-color);
+            border-style: solid;
+            pointer-events: none;
+        }
+
+        .line-up {
+            height: 50%;
+            border-width: 2px 2px 0 0;
+            top: 50%;
+            border-top-right-radius: 8px;
+        }
+
+        .line-down {
+            height: 50%;
+            border-width: 0 2px 2px 0;
+            bottom: 50%;
+            border-bottom-right-radius: 8px;
+        }
+
+        .line-straight {
+            height: 2px;
+            border-width: 2px 0 0 0;
+            top: 50%;
+            width: var(--connector-width);
+        }
+
+        .team-card {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            z-index: 2;
+        }
+
+        .team-card:hover:not(.empty) {
+            transform: scale(1.02);
+            filter: brightness(0.98);
+        }
+
+        .winner-glow {
+            box-shadow: 0 0 15px rgba(34, 197, 94, 0.4);
+            border-color: #22c55e !important;
+            background-color: #f0fdf4 !important;
+        }
+
+        #bracketContainer::-webkit-scrollbar {
+            height: 14px;
+        }
+
+        #bracketContainer::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+
+        #bracketContainer::-webkit-scrollbar-thumb {
+            background: #94a3b8;
+            border-radius: 7px;
+            border: 3px solid #f1f5f9;
+        }
+
+        /* Firefox */
+        #bracketContainer {
+            scrollbar-width: thin;
+            scrollbar-color: #94a3b8 #f1f5f9;
+        }
+
+        .center-match {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 100%;
+        }
+
+        .results-sticky {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mb-8">
+            <h1 class="text-3xl font-extrabold text-slate-800 mb-6 flex items-center gap-3">
+                <span class="text-blue-600">🏆</span> 戰鬥陀螺賽程產生器
+            </h1>
+
+            <div class="flex flex-wrap gap-6 items-end">
+                <div class="space-y-2">
+                    <label class="text-sm font-semibold text-slate-500">參賽人數</label>
+                    <input type="number" id="playerCount" value="8" min="2" max="64"
+                        class="block w-32 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div class="space-y-2">
+                    <label class="text-sm font-semibold text-slate-500">顯示前幾名</label>
+                    <input type="number" id="topN" value="4" min="1" max="10"
+                        class="block w-32 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="generateNewTournament()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition shadow-md active:scale-95">
+                        🎲 隨機生成
+                    </button>
+                    <button onclick="exportJPG()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-6 rounded-lg transition shadow-md active:scale-95">
+                        📸 匯出圖片
+                    </button>
+                    <button onclick="clearData()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2 px-6 rounded-lg transition active:scale-95">
+                        🗑️ 重設
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 最終排名移至對戰圖上方 -->
+        <div id="resultsContainer" class="mb-8 bg-white p-8 rounded-2xl shadow-sm border border-slate-200 hidden">
+        </div>
+
+        <div id="bracketContainer" class="bg-white rounded-2xl shadow-inner border border-slate-200 p-10 overflow-x-auto min-h-[500px] flex items-start gap-0">
+        </div>
+    </div>
+
+    <script>
+        const STORAGE_KEY = 'gold_bracket_v4';
+
+        let state = {
+            rounds: [],
+            thirdPlace: [null, null],
+            thirdWinner: null,
+            champion: null,
+            topN: 4,
+            rankingRounds: [],
+            rankingResults: {}
+        };
+
+        let layoutCache = {
+            cardH: null,
+            unit: null,
+            baseMatches: null,
+            totalHeight: null,
+            measured: false
+        };
+
+        window.onload = () => {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                state = JSON.parse(saved);
+                document.getElementById('topN').value = state.topN;
+                layoutCache.measured = false;
+                document.fonts.ready.then(() => {
+                    saveAndRender();
+                });
+            }
+        };
+
+        function generateNewTournament() {
+            const n = parseInt(document.getElementById('playerCount').value);
+            const topN = parseInt(document.getElementById('topN').value);
+
+            if (n < 2) return;
+
+            let size = Math.pow(2, Math.ceil(Math.log2(n)));
+            let players = Array.from({ length: n }, (_, i) => `選手 ${i + 1}`);
+
+            while (players.length < size) {
+                players.push('輪空 (BYE)');
+            }
+
+            for (let i = players.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [players[i], players[j]] = [players[j], players[i]];
+            }
+
+            let rounds = [];
+            let firstRound = [];
+
+            for (let i = 0; i < players.length; i += 2) {
+                firstRound.push([players[i], players[i + 1]]);
+            }
+
+            rounds.push(firstRound);
+
+            let mCount = firstRound.length;
+
+            while (mCount > 1) {
+                mCount /= 2;
+                rounds.push(Array.from({ length: mCount }, () => ['等待晉級', '等待晉級']));
+            }
+
+            state = {
+                rounds,
+                thirdPlace: [null, null],
+                thirdWinner: null,
+                champion: null,
+                topN,
+                rankingRounds: [],
+                rankingResults: {}
+            };
+
+            // mark layout as not yet measured so the first render measures sizes
+            layoutCache.measured = false;
+
+            autoAdvanceByes();
+            saveAndRender();
+        }
+
+        function autoAdvanceByes() {
+            state.rounds[0].forEach((match, mIdx) => {
+                if (match[1] === '輪空 (BYE)') {
+                    advance(0, mIdx, 0, false);
+                } else if (match[0] === '輪空 (BYE)') {
+                    advance(0, mIdx, 1, false);
+                }
+            });
+        }
+
+        function advance(rIdx, mIdx, pIdx, userClick = true) {
+            const winner = state.rounds[rIdx][mIdx][pIdx];
+
+            if (!winner || winner === '輪空 (BYE)' || winner === '等待晉級') return;
+
+            const isFinal = (rIdx === state.rounds.length - 1);
+            const isSemi = (rIdx === state.rounds.length - 2);
+
+            if (isFinal) {
+                state.champion = winner;
+            } else {
+                const nextMIdx = Math.floor(mIdx / 2);
+                const nextPIdx = mIdx % 2;
+
+                if (state.rounds[rIdx + 1][nextMIdx][nextPIdx] !== winner) {
+                    clearDownstream(rIdx, mIdx);
+                }
+
+                state.rounds[rIdx + 1][nextMIdx][nextPIdx] = winner;
+
+                if (isSemi) {
+                    const loser = state.rounds[rIdx][mIdx][1 - pIdx];
+                    state.thirdPlace[mIdx] = (loser === '輪空 (BYE)') ? '無對手' : loser;
+                    state.thirdWinner = null;
+                }
+            }
+
+            if (userClick) saveAndRender();
+        }
+
+        function clearDownstream(rIdx, mIdx) {
+            if (rIdx >= state.rounds.length - 1) {
+                state.champion = null;
+                return;
+            }
+
+            const nextR = rIdx + 1;
+            const nextM = Math.floor(mIdx / 2);
+            const nextP = mIdx % 2;
+
+            state.rounds[nextR][nextM][nextP] = '等待晉級';
+            state.champion = null;
+
+            clearDownstream(nextR, nextM);
+        }
+
+        function getMatchLoser(rIdx, mIdx) {
+            const match = state.rounds[rIdx]?.[mIdx];
+            if (!match || rIdx >= state.rounds.length - 1) return null;
+            const nextMatch = state.rounds[rIdx + 1]?.[Math.floor(mIdx / 2)];
+            if (!nextMatch) return null;
+            const winner = nextMatch[mIdx % 2];
+            if (!winner || winner === '等待晉級' || winner === '輪空 (BYE)') return null;
+            if (match[0] === winner) return match[1];
+            if (match[1] === winner) return match[0];
+            return null;
+        }
+
+        function getRankingTargetRound() {
+            if (state.topN <= 4 || state.rounds.length < 3) return null;
+            const totalRounds = state.rounds.length;
+            let remaining = state.topN - 4;
+            for (let r = totalRounds - 3; r >= 0; r--) {
+                const blockSize = Math.pow(2, totalRounds - r - 1);
+                if (remaining <= blockSize) {
+                    return r;
+                }
+                remaining -= blockSize;
+            }
+            return 0;
+        }
+
+        function buildRankingRounds() {
+            const targetRound = getRankingTargetRound();
+            if (targetRound === null) {
+                state.rankingRounds = [];
+                return;
+            }
+
+            const loserMatches = state.rounds[targetRound];
+            const loserCount = loserMatches.length;
+            const newRounds = [];
+            let roundSize = loserCount / 2;
+            while (roundSize >= 1) {
+                newRounds.push(Array.from({ length: roundSize }, () => ['等待晉級', '等待晉級']));
+                roundSize /= 2;
+            }
+
+            loserMatches.forEach((match, mIdx) => {
+                const loser = getMatchLoser(targetRound, mIdx);
+                const slot = Math.floor(mIdx / 2);
+                newRounds[0][slot][mIdx % 2] = loser || '等待晉級';
+            });
+
+            if (state.rankingRounds.length === newRounds.length) {
+                for (let r = 1; r < newRounds.length; r++) {
+                    newRounds[r].forEach((match, mIdx) => {
+                        const existing = state.rankingRounds[r]?.[mIdx];
+                        if (!existing) return;
+                        if (existing[0] && existing[0] !== '等待晉級') {
+                            match[0] = existing[0];
+                        }
+                        if (existing[1] && existing[1] !== '等待晉級') {
+                            match[1] = existing[1];
+                        }
+                    });
+                }
+            }
+
+            for (let r = 1; r < newRounds.length; r++) {
+                newRounds[r].forEach((match, mIdx) => {
+                    const prevMatch = newRounds[r - 1][Math.floor(mIdx / 2)];
+                    const winner = match[mIdx % 2];
+                    if (winner && winner !== '等待晉級' && !prevMatch.includes(winner)) {
+                        match[mIdx % 2] = '等待晉級';
+                    }
+                });
+            };
+
+            state.rankingRounds = newRounds;
+            const validFinalKey = `${newRounds.length - 1}-0`;
+            Object.keys(state.rankingResults).forEach(key => {
+                if (key !== validFinalKey) {
+                    delete state.rankingResults[key];
+                }
+            });
+            if (state.rankingResults[validFinalKey]) {
+                const finalMatch = newRounds[newRounds.length - 1][0];
+                if (!finalMatch.includes(state.rankingResults[validFinalKey])) {
+                    delete state.rankingResults[validFinalKey];
+                }
+            }
+        }
+
+        function clearRankingDownstream(rIdx, mIdx) {
+            if (rIdx >= state.rankingRounds.length - 1) {
+                delete state.rankingResults[`${rIdx}-${mIdx}`];
+                return;
+            }
+
+            const nextR = rIdx + 1;
+            const nextM = Math.floor(mIdx / 2);
+            const nextP = mIdx % 2;
+
+            state.rankingRounds[nextR][nextM][nextP] = '等待晉級';
+            clearRankingDownstream(nextR, nextM);
+        }
+
+        function advanceRanking(rIdx, mIdx, pIdx, userClick = true) {
+            const match = state.rankingRounds[rIdx]?.[mIdx];
+            if (!match) return;
+            const winner = match[pIdx];
+            if (!winner || winner === '等待晉級' || winner === '輪空 (BYE)') return;
+
+            const isFinal = (rIdx === state.rankingRounds.length - 1);
+            if (isFinal) {
+                state.rankingResults[`${rIdx}-${mIdx}`] = winner;
+            } else {
+                const nextMIdx = Math.floor(mIdx / 2);
+                const nextPIdx = mIdx % 2;
+                if (state.rankingRounds[rIdx + 1][nextMIdx][nextPIdx] !== winner) {
+                    clearRankingDownstream(rIdx, mIdx);
+                }
+                state.rankingRounds[rIdx + 1][nextMIdx][nextPIdx] = winner;
+            }
+
+            if (userClick) saveAndRender();
+        }
+
+        function winThird(pIdx) {
+            const p = state.thirdPlace[pIdx];
+
+            if (!p || p === '等待晉級' || p === '無對手') return;
+
+            state.thirdWinner = p;
+            saveAndRender();
+        }
+
+        function saveAndRender() {
+            const topNInput = document.getElementById('topN');
+            const maxPlayers = state.rounds?.[0]?.length ? state.rounds[0].length * 2 : 1;
+            topNInput.max = maxPlayers;
+            state.topN = Math.min(parseInt(topNInput.value) || 4, maxPlayers);
+            buildRankingRounds();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            render();
+        }
+
+        function render() {
+            const container = document.getElementById('bracketContainer');
+            container.innerHTML = '';
+
+            if (!state.rounds || state.rounds.length === 0) return;
+
+            buildRankingRounds();
+
+            const mustMeasure = !layoutCache.measured || !layoutCache.cardH || !layoutCache.unit || !layoutCache.totalHeight;
+            if (mustMeasure) {
+                const tempMatchBox = document.createElement('div');
+                tempMatchBox.className = 'w-full flex flex-col gap-0 border-2 border-slate-200 rounded-xl overflow-hidden shadow-sm bg-slate-50';
+                const tempA = document.createElement('div');
+                tempA.className = 'team-card px-4 py-3 text-sm font-bold border-b border-slate-200 bg-white';
+                tempA.innerText = '測試';
+                const tempB = tempA.cloneNode(true);
+                tempMatchBox.appendChild(tempA);
+                tempMatchBox.appendChild(tempB);
+                tempMatchBox.style.position = 'absolute';
+                tempMatchBox.style.left = '-9999px';
+                document.body.appendChild(tempMatchBox);
+                const cardH = Math.ceil(tempMatchBox.getBoundingClientRect().height);
+                tempMatchBox.remove();
+
+                const baseGap = 24;
+                const unit = cardH + baseGap;
+                const baseMatches = state.rounds[0].length;
+                const totalHeight = ((baseMatches - 1) * unit) + cardH;
+
+                layoutCache = { cardH, unit, baseMatches, totalHeight, measured: true };
+            }
+
+            const { cardH, unit, totalHeight } = layoutCache;
+
+            state.rounds.forEach((round, rIdx) => {
+                const col = document.createElement('div');
+                col.className = 'round-column';
+
+                const title = document.createElement('div');
+                title.className = 'text-xs font-black text-slate-400 uppercase tracking-widest mb-6 text-center';
+                title.innerText = (rIdx === state.rounds.length - 1)
+                    ? 'Final 決賽'
+                    : `Round ${rIdx + 1}`;
+
+                col.appendChild(title);
+
+                const centerWrap = document.createElement('div');
+                centerWrap.className = 'center-match';
+                centerWrap.style.position = 'relative';
+                centerWrap.style.height = `${totalHeight}px`;
+                centerWrap.style.width = 'var(--card-width)';
+
+                round.forEach((match, mIdx) => {
+
+                    const matchWrap = document.createElement('div');
+                    matchWrap.className = 'match-wrapper';
+                    matchWrap.style.position = 'absolute';
+                    matchWrap.style.left = '0';
+                    const pow2 = Math.pow(2, rIdx);
+                    const top = ((mIdx * pow2) + (pow2 - 1) / 2) * unit;
+                    matchWrap.style.top = `${top}px`;
+
+                    const matchBox = document.createElement('div');
+                    matchBox.className = 'w-full flex flex-col gap-0 border-2 border-slate-200 rounded-xl overflow-hidden shadow-sm bg-slate-50';
+
+                    match.forEach((player, pIdx) => {
+                        const isWinner = (rIdx < state.rounds.length - 1)
+                            ? (state.rounds[rIdx + 1][Math.floor(mIdx / 2)][mIdx % 2] === player && player !== '等待晉級')
+                            : (state.champion === player && player !== '等待晉級');
+
+                        const pDiv = document.createElement('div');
+
+                        pDiv.className = `team-card px-4 py-3 text-sm font-bold cursor-pointer border-b last:border-b-0 border-slate-200 bg-white
+                            ${player.includes('BYE') ? 'text-slate-300 bg-slate-50 cursor-not-allowed empty' : 'text-slate-700'}
+                            ${isWinner ? 'winner-glow z-10' : ''}`;
+
+                        pDiv.innerText = player;
+                        pDiv.onclick = () => advance(rIdx, mIdx, pIdx);
+
+                        matchBox.appendChild(pDiv);
+                    });
+
+                    matchWrap.appendChild(matchBox);
+
+                    if (rIdx < state.rounds.length - 1) {
+                        const line = document.createElement('div');
+                        const lineClass = (mIdx % 2 === 0) ? 'line-up' : 'line-down';
+                        line.className = `connector-line ${lineClass}`;
+                        matchWrap.appendChild(line);
+                    } else if (state.rounds.length > 1) {
+                        const line = document.createElement('div');
+                        line.className = 'connector-line line-straight opacity-20';
+                        matchWrap.appendChild(line);
+                    }
+
+                    centerWrap.appendChild(matchWrap);
+                });
+
+                col.appendChild(centerWrap);
+
+                if (rIdx === state.rounds.length - 1 && state.rounds.length > 1) {
+                    const thirdTitle = document.createElement('div');
+                    thirdTitle.className = 'text-[10px] font-bold text-amber-500 uppercase mt-8 mb-2 text-center';
+                    thirdTitle.innerText = '3rd Place Match 季軍賽';
+                    col.appendChild(thirdTitle);
+
+                    const tBox = document.createElement('div');
+                    tBox.className = 'border-2 border-dashed border-amber-200 rounded-xl overflow-hidden bg-amber-50';
+
+                    state.thirdPlace.forEach((p, i) => {
+                        const pName = p || '等待準決賽';
+                        const isWin = state.thirdWinner === pName && pName !== '等待準決賽';
+
+                        const div = document.createElement('div');
+                        div.className = `px-4 py-2 text-xs font-bold cursor-pointer border-b last:border-b-0 border-amber-100 bg-white
+                            ${isWin ? 'bg-amber-100 text-amber-700' : 'text-slate-500'}`;
+
+                        div.innerText = pName;
+                        div.onclick = () => winThird(i);
+
+                        tBox.appendChild(div);
+                    });
+
+                    col.appendChild(tBox);
+                }
+
+                container.appendChild(col);
+            });
+
+            if (state.rankingRounds.length > 0) {
+                state.rankingRounds.forEach((round, rIdx) => {
+                    const col = document.createElement('div');
+                    col.className = 'round-column';
+
+                    const title = document.createElement('div');
+                    title.className = 'text-xs font-black text-slate-400 uppercase tracking-widest mb-6 text-center';
+                    title.innerText = (rIdx === state.rankingRounds.length - 1)
+                        ? '排名補賽 Final'
+                        : `排名補賽 Round ${rIdx + 1}`;
+
+                    col.appendChild(title);
+
+                    const centerWrap = document.createElement('div');
+                    centerWrap.className = 'center-match';
+                    centerWrap.style.position = 'relative';
+                    centerWrap.style.height = `${totalHeight}px`;
+                    centerWrap.style.width = 'var(--card-width)';
+
+                    round.forEach((match, mIdx) => {
+                        const matchWrap = document.createElement('div');
+                        matchWrap.className = 'match-wrapper';
+                        matchWrap.style.position = 'absolute';
+                        matchWrap.style.left = '0';
+                        const pow2 = Math.pow(2, rIdx);
+                        const top = ((mIdx * pow2) + (pow2 - 1) / 2) * unit;
+                        matchWrap.style.top = `${top}px`;
+
+                        const matchBox = document.createElement('div');
+                        matchBox.className = 'w-full flex flex-col gap-0 border-2 border-slate-200 rounded-xl overflow-hidden shadow-sm bg-slate-50';
+
+                        match.forEach((player, pIdx) => {
+                            const isWinner = (rIdx < state.rankingRounds.length - 1)
+                                ? (state.rankingRounds[rIdx + 1][Math.floor(mIdx / 2)][mIdx % 2] === player && player !== '等待晉級')
+                                : (state.rankingResults[`${rIdx}-${mIdx}`] === player && player !== '等待晉級');
+
+                            const pDiv = document.createElement('div');
+
+                            pDiv.className = `team-card px-4 py-3 text-sm font-bold cursor-pointer border-b last:border-b-0 border-slate-200 bg-white
+                                ${player.includes('BYE') ? 'text-slate-300 bg-slate-50 cursor-not-allowed empty' : 'text-slate-700'}
+                                ${isWinner ? 'winner-glow z-10' : ''}`;
+
+                            pDiv.innerText = player;
+                            pDiv.onclick = () => advanceRanking(rIdx, mIdx, pIdx);
+
+                            matchBox.appendChild(pDiv);
+                        });
+
+                        matchWrap.appendChild(matchBox);
+
+                        if (rIdx < state.rankingRounds.length - 1) {
+                            const line = document.createElement('div');
+                            const lineClass = (mIdx % 2 === 0) ? 'line-up' : 'line-down';
+                            line.className = `connector-line ${lineClass}`;
+                            matchWrap.appendChild(line);
+                        } else if (state.rankingRounds.length > 1) {
+                            const line = document.createElement('div');
+                            line.className = 'connector-line line-straight opacity-20';
+                            matchWrap.appendChild(line);
+                        }
+
+                        centerWrap.appendChild(matchWrap);
+                    });
+
+                    col.appendChild(centerWrap);
+                    container.appendChild(col);
+                });
+            }
+
+            updateRankings();
+        }
+
+        function updateRankings() {
+            const res = document.getElementById('resultsContainer');
+            if (!state.rounds || state.rounds.length === 0) {
+                res.classList.add('hidden');
+                return;
+            }
+
+            const rankings = [];
+            const totalRounds = state.rounds.length;
+            const finalMatch = state.rounds[totalRounds - 1][0];
+            const champion = state.champion;
+            const runnerUp = champion ? finalMatch.find(p => p !== champion && p !== '等待晉級') : null;
+
+            if (champion) {
+                rankings.push({ rank: 1, name: champion });
+            }
+            if (runnerUp) {
+                rankings.push({ rank: 2, name: runnerUp });
+            }
+
+            const semiLosers = [];
+            if (totalRounds >= 2) {
+                state.rounds[totalRounds - 2].forEach((match, mIdx) => {
+                    const nextWinner = state.rounds[totalRounds - 1][Math.floor(mIdx / 2)][mIdx % 2];
+                    const loser = match.find(p => p !== nextWinner);
+                    if (loser && loser !== '等待晉級' && loser !== '輪空 (BYE)') {
+                        semiLosers.push(loser);
+                    }
+                });
+            }
+
+            if (state.thirdWinner) {
+                rankings.push({ rank: 3, name: state.thirdWinner });
+                const fourth = state.thirdPlace.find(p => p !== state.thirdWinner);
+                if (fourth && fourth !== '等待晉級' && fourth !== '無對手' && fourth !== '輪空 (BYE)') {
+                    rankings.push({ rank: 4, name: fourth });
+                } else if (semiLosers.length === 2) {
+                    const other = semiLosers.find(p => p !== state.thirdWinner);
+                    if (other) rankings.push({ rank: 4, name: other });
+                }
+            }
+
+            const targetRound = getRankingTargetRound();
+            if (targetRound !== null && state.rankingRounds.length > 0) {
+                const baseRank = Math.pow(2, totalRounds - targetRound - 1) + 1;
+                const finalIdx = state.rankingRounds.length - 1;
+                const finalMatch = state.rankingRounds[finalIdx][0];
+                const finalKey = `${finalIdx}-0`;
+                const finalWinner = state.rankingResults[finalKey];
+
+                if (finalWinner) {
+                    const finalLoser = finalMatch.find(p => p !== finalWinner);
+                    if (finalWinner && finalWinner !== '等待晉級') {
+                        rankings.push({ rank: baseRank, name: finalWinner });
+                    }
+                    if (finalLoser && finalLoser !== '等待晉級' && finalLoser !== '輪空 (BYE)') {
+                        rankings.push({ rank: baseRank + 1, name: finalLoser });
+                    }
+                }
+
+                let nextRank = baseRank + 2;
+                for (let r = state.rankingRounds.length - 2; r >= 0; r--) {
+                    state.rankingRounds[r].forEach((match, mIdx) => {
+                        const nextMatch = state.rankingRounds[r + 1]?.[Math.floor(mIdx / 2)];
+                        const winner = nextMatch ? nextMatch[mIdx % 2] : null;
+                        if (winner && winner !== '等待晉級') {
+                            const loser = match.find(p => p !== winner);
+                            if (loser && loser !== '等待晉級' && loser !== '輪空 (BYE)') {
+                                rankings.push({ rank: nextRank, name: loser });
+                            }
+                            nextRank += 1;
+                        }
+                    });
+                }
+            }
+
+            const validRankings = rankings
+                .filter(r => r.name && r.rank <= state.topN)
+                .sort((a, b) => a.rank - b.rank);
+
+            if (validRankings.length > 0) {
+                res.innerHTML = `
+                    <h2 class="text-xl font-extrabold text-slate-800 mb-4 flex items-center gap-2">
+                        <span class="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-sm">#</span>
+                        最終排名清單
+                    </h2>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        ${validRankings.map(r => `
+                            <div class="flex items-center justify-between p-4 rounded-xl border border-slate-100 bg-slate-50">
+                                <span class="font-black text-blue-600">第 ${r.rank} 名</span>
+                                <span class="font-bold text-slate-700">${r.name}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+
+                res.classList.remove('hidden');
+            } else {
+                res.classList.add('hidden');
+            }
+        }
+
+        function clearData() {
+            if (confirm('確定要清除所有賽程資料重來嗎？')) {
+                localStorage.removeItem(STORAGE_KEY);
+                location.reload();
+            }
+        }
+
+        function exportJPG() {
+            const area = document.querySelector('.max-w-7xl');
+
+            html2canvas(area, {
+                scale: 2,
+                backgroundColor: '#ffffff',
+                logging: false,
+                useCORS: true
+            }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = 'tournament-pyramid.jpg';
+                link.href = canvas.toDataURL('image/jpeg', 0.9);
+                link.click();
+            });
+        }
+    </script>
+</body>
+</html>
